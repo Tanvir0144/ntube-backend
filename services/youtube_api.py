@@ -1,24 +1,44 @@
 import os
 import requests
 from dotenv import load_dotenv
+from requests.exceptions import RequestException, HTTPError, Timeout
 
-# ✅ Load environment variables (for local + Render)
+# ======================================================
+# ✅ Load environment variables (safe for local + Render)
+# ======================================================
 load_dotenv()
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
 REGION_CODE = os.getenv("REGION_CODE", "BD").strip()
-COOKIES_B64 = os.getenv("COOKIES_B64", "").strip()
 
 if not YOUTUBE_API_KEY:
-    print("⚠️ [WARN] YOUTUBE_API_KEY not found in environment!")
-    raise RuntimeError("YOUTUBE_API_KEY missing in .env or environment")
+    raise RuntimeError("❌ Missing YOUTUBE_API_KEY in .env")
 
-# -------------------------------
-# 🌎 YouTube Data API base
-# -------------------------------
+# 🌍 YouTube Data API base
 BASE_URL = "https://www.googleapis.com/youtube/v3"
 
-# 🔍 Search videos
+
+# ------------------------------------------------------
+# 🔧 Helper: Safe request wrapper with retry + graceful fallback
+# ------------------------------------------------------
+def safe_request(url, params, retries=2):
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except HTTPError as e:
+            print(f"⚠️ [YouTubeAPI] HTTP Error: {e} (Attempt {attempt+1}/{retries})")
+        except Timeout:
+            print(f"⚠️ [YouTubeAPI] Timeout — retrying ({attempt+1}/{retries})...")
+        except RequestException as e:
+            print(f"⚠️ [YouTubeAPI] Network error: {e}")
+    return {"error": "Failed to fetch data from YouTube API"}
+
+
+# ------------------------------------------------------
+# 🔍 1️⃣ Search Videos
+# ------------------------------------------------------
 def yt_search(q, max_results=20, page_token=None):
     params = {
         "part": "snippet",
@@ -29,26 +49,59 @@ def yt_search(q, max_results=20, page_token=None):
     }
     if page_token:
         params["pageToken"] = page_token
-    res = requests.get(f"{BASE_URL}/search", params=params)
-    res.raise_for_status()
-    return res.json()
 
-# 🔥 Trending videos
+    data = safe_request(f"{BASE_URL}/search", params)
+    if "error" in data:
+        return {"results": [], "nextPageToken": None, "error": data["error"]}
+
+    videos = []
+    for item in data.get("items", []):
+        snippet = item.get("snippet", {})
+        videos.append({
+            "id": item["id"].get("videoId", ""),
+            "title": snippet.get("title", "No Title"),
+            "thumbnail": snippet.get("thumbnails", {}).get("medium", {}).get("url", ""),
+            "channel": snippet.get("channelTitle", "Unknown Channel"),
+            "duration": "N/A",
+        })
+    return {"results": videos, "nextPageToken": data.get("nextPageToken")}
+
+
+# ------------------------------------------------------
+# 🔥 2️⃣ Trending Videos
+# ------------------------------------------------------
 def yt_trending(region="BD", max_results=20, page_token=None):
     params = {
         "part": "snippet,contentDetails,statistics",
         "chart": "mostPopular",
-        "regionCode": region,
+        "regionCode": region or REGION_CODE,
         "maxResults": max_results,
         "key": YOUTUBE_API_KEY,
     }
     if page_token:
         params["pageToken"] = page_token
-    res = requests.get(f"{BASE_URL}/videos", params=params)
-    res.raise_for_status()
-    return res.json()
 
-# 🎬 Related videos
+    data = safe_request(f"{BASE_URL}/videos", params)
+    if "error" in data:
+        return {"trending": [], "nextPageToken": None, "error": data["error"]}
+
+    videos = []
+    for item in data.get("items", []):
+        snippet = item.get("snippet", {})
+        videos.append({
+            "id": item.get("id", ""),
+            "title": snippet.get("title", "No Title"),
+            "thumbnail": snippet.get("thumbnails", {}).get("medium", {}).get("url", ""),
+            "channel": snippet.get("channelTitle", "Unknown Channel"),
+            "duration": item.get("contentDetails", {}).get("duration", "N/A"),
+            "views": item.get("statistics", {}).get("viewCount", "0"),
+        })
+    return {"trending": videos, "nextPageToken": data.get("nextPageToken")}
+
+
+# ------------------------------------------------------
+# 🔁 3️⃣ Related Videos
+# ------------------------------------------------------
 def yt_related(video_id, max_results=20, page_token=None):
     params = {
         "part": "snippet",
@@ -59,11 +112,27 @@ def yt_related(video_id, max_results=20, page_token=None):
     }
     if page_token:
         params["pageToken"] = page_token
-    res = requests.get(f"{BASE_URL}/search", params=params)
-    res.raise_for_status()
-    return res.json()
 
-# 💡 Search suggestion (simple)
+    data = safe_request(f"{BASE_URL}/search", params)
+    if "error" in data:
+        return {"related": [], "nextPageToken": None, "error": data["error"]}
+
+    videos = []
+    for item in data.get("items", []):
+        snippet = item.get("snippet", {})
+        videos.append({
+            "id": item["id"].get("videoId", ""),
+            "title": snippet.get("title", "No Title"),
+            "thumbnail": snippet.get("thumbnails", {}).get("medium", {}).get("url", ""),
+            "channel": snippet.get("channelTitle", "Unknown Channel"),
+            "duration": "N/A",
+        })
+    return {"related": videos, "nextPageToken": data.get("nextPageToken")}
+
+
+# ------------------------------------------------------
+# 💡 4️⃣ Search Suggestions (no API key required)
+# ------------------------------------------------------
 def yt_suggest(query):
     try:
         from urllib.parse import quote
@@ -72,5 +141,5 @@ def yt_suggest(query):
         if r.status_code == 200:
             return r.json()[1]
     except Exception as e:
-        print(f"[yt_suggest] Error: {e}")
+        print(f"⚠️ [yt_suggest] {e}")
     return []
