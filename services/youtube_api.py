@@ -1,81 +1,85 @@
 import os
-import requests
-from dotenv import load_dotenv
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-# ✅ Load .env values (Render + Local)
-load_dotenv()
-
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip()
-REGION_CODE = os.getenv("REGION_CODE", "BD").strip()
-
-if not YOUTUBE_API_KEY:
-    print("⚠️ [WARN] YOUTUBE_API_KEY not found!")
+API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+if not API_KEY:
     raise RuntimeError("YOUTUBE_API_KEY missing in .env or environment")
 
-# 🌎 Base URL
-BASE_URL = "https://www.googleapis.com/youtube/v3"
+youtube = build("youtube", "v3", developerKey=API_KEY, cache_discovery=False)
 
-# 🔍 Search videos
-def yt_search(q, max_results=20, page_token=None):
-    params = {
-        "part": "snippet",
-        "q": q,
-        "type": "video",
-        "maxResults": max_results,
-        "regionCode": REGION_CODE,
-        "safeSearch": "none",
-        "key": YOUTUBE_API_KEY,
+def _norm_item_snippet(it):
+    snip = it["snippet"]
+    return {
+        "id": it["id"]["videoId"],
+        "title": snip["title"],
+        "thumbnail": snip["thumbnails"]["high"]["url"],
+        "channel": snip["channelTitle"],
+        "publishedAt": snip["publishedAt"],
     }
-    if page_token:
-        params["pageToken"] = page_token
-    res = requests.get(f"{BASE_URL}/search", params=params, timeout=10)
-    res.raise_for_status()
-    return res.json()
 
-# 🔥 Trending videos
-def yt_trending(region="BD", max_results=20, page_token=None):
-    params = {
-        "part": "snippet,contentDetails,statistics",
-        "chart": "mostPopular",
-        "regionCode": region,
-        "maxResults": max_results,
-        "safeSearch": "none",
-        "key": YOUTUBE_API_KEY,
-    }
-    if page_token:
-        params["pageToken"] = page_token
-    res = requests.get(f"{BASE_URL}/videos", params=params, timeout=10)
-    res.raise_for_status()
-    return res.json()
-
-# 🎬 Related videos (✅ FIXED 400 Error)
-def yt_related(video_id, max_results=20, page_token=None):
-    params = {
-        "part": "snippet",
-        "type": "video",
-        "relatedToVideoId": video_id,
-        "maxResults": max_results,
-        "safeSearch": "none",
-        "key": YOUTUBE_API_KEY,
-    }
-    if page_token:
-        params["pageToken"] = page_token
+def yt_search(query: str, max_results: int = 20, page_token: str | None = None):
     try:
-        res = requests.get(f"{BASE_URL}/search", params=params, timeout=10)
-        res.raise_for_status()
-        return res.json()
-    except requests.exceptions.RequestException as e:
-        print(f"⚠️ [YouTubeAPI] Related videos fetch failed: {e}")
-        return {"results": []}
+        res = youtube.search().list(
+            q=query, part="snippet", type="video", maxResults=max_results,
+            pageToken=page_token or None, safeSearch="none"
+        ).execute()
+        items = [_norm_item_snippet(it) for it in res.get("items", []) if it["id"].get("videoId")]
+        return {"results": items, "nextPageToken": res.get("nextPageToken"), "prevPageToken": res.get("prevPageToken")}
+    except HttpError as e:
+        raise RuntimeError(f"Search error: {e}")
 
-# 💡 Search suggestions (for autocomplete)
-def yt_suggest(query):
-    from urllib.parse import quote
+def yt_trending(region: str = "BD", max_results: int = 20, page_token: str | None = None):
     try:
-        url = f"https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q={quote(query)}"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            return res.json()[1]
-    except Exception as e:
-        print(f"⚠️ [yt_suggest] {e}")
-    return []
+        res = youtube.videos().list(
+            part="snippet,statistics,contentDetails",
+            chart="mostPopular",
+            regionCode=region,
+            maxResults=max_results,
+            pageToken=page_token or None,
+        ).execute()
+        items = [{
+            "id": it["id"],
+            "title": it["snippet"]["title"],
+            "thumbnail": it["snippet"]["thumbnails"]["high"]["url"],
+            "channel": it["snippet"]["channelTitle"],
+            "publishedAt": it["snippet"]["publishedAt"],
+            "views": it.get("statistics", {}).get("viewCount"),
+        } for it in res.get("items", []) if it.get("id")]
+        return {"region": region, "results": items, "nextPageToken": res.get("nextPageToken"), "prevPageToken": res.get("prevPageToken")}
+    except HttpError as e:
+        raise RuntimeError(f"Trending error: {e}")
+
+def yt_related(video_id: str, max_results: int = 20, page_token: str | None = None):
+    try:
+        res = youtube.search().list(
+            part="snippet",
+            relatedToVideoId=video_id,
+            type="video",
+            maxResults=max_results,
+            pageToken=page_token or None,
+            safeSearch="none",
+        ).execute()
+        items = [_norm_item_snippet(it) for it in res.get("items", []) if it["id"].get("videoId")]
+        return {"videoId": video_id, "results": items, "nextPageToken": res.get("nextPageToken"), "prevPageToken": res.get("prevPageToken")}
+    except HttpError as e:
+        raise RuntimeError(f"Related error: {e}")
+
+def yt_suggest(q: str) -> list[str]:
+    # Lightweight suggest: search titles → unique best-matching phrases
+    res = youtube.search().list(q=q, part="snippet", type="video", maxResults=10, safeSearch="none").execute()
+    titles = [it["snippet"]["title"] for it in res.get("items", [])]
+    # Build simple suggestions list from titles + base variants
+    base = q.strip()
+    suffixes = [" tutorial", " bangla", " 2025", " best", " latest", " how to", " official", " review"]
+    cand = [base + s for s in suffixes] + titles
+    # unique keep order
+    seen, out = set(), []
+    for t in cand:
+        k = t.strip()
+        if k and k.lower() not in seen:
+            seen.add(k.lower())
+            out.append(k)
+        if len(out) >= 12:
+            break
+    return out
