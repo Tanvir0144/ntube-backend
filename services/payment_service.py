@@ -8,7 +8,7 @@ from fastapi import HTTPException
 # Configure the SDK using environment variables
 try:
     paypalrestsdk.configure({
-        "mode": os.getenv("PAYPAL_MODE", "sandbox"),  # "sandbox" for testing, "live" for production
+        "mode": os.getenv("PAYPAL_MODE", "live"),  # "sandbox" for testing, "live" for production
         "client_id": os.getenv("PAYPAL_CLIENT_ID"),
         "client_secret": os.getenv("PAYPAL_CLIENT_SECRET")
     })
