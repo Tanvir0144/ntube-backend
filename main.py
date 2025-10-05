@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from services.youtube_api import yt_search, yt_trending, yt_related, yt_suggest
 from services.yt_dlp_service import get_stream_links, get_download_link, get_video_info
+from services.payment_service import create_paypal_order # ✅ Added for PayPal Payment
 from utils.cache import cache_get, cache_set, cache_stats, cache_cleanup_job
 from utils.helpers import RateLimiter
 
@@ -151,6 +152,21 @@ def download(video_id: str, type: str = Query("video", pattern="^(video|audio)$"
         return get_download_link(video_id, kind=type)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+# 💳 Create Payment Endpoint (✅ Added for PayPal Payment)
+@app.post("/payment/create")
+def create_payment():
+    try:
+        # Call the function from our payment service
+        approval_url = create_paypal_order()
+        return {"approval_url": approval_url}
+    except HTTPException as e:
+        # Re-raise the specific exception from the service
+        raise e
+    except Exception as e:
+        # Catch any other unexpected errors
+        print(f"❌ Unexpected error in /payment/create: {e}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
 # ❤️ Health check (for Render / uptime monitor)
 @app.api_route("/health", methods=["GET", "HEAD"])
