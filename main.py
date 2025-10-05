@@ -43,9 +43,9 @@ async def rate_limit_middleware(request: Request, call_next):
 # ♻️ Background cache cleanup thread
 threading.Thread(target=cache_cleanup_job, daemon=True).start()
 
-# 🏠 Root endpoint
-@app.get("/")
-def root():
+# 🏠 Root endpoint (GET + HEAD support)
+@app.api_route("/", methods=["GET", "HEAD"])
+def root(_: Request):
     return {
         "message": "✅ NTUBE Ultra Backend OK",
         "version": APP_VERSION,
